@@ -1,61 +1,118 @@
 import express from "express";
 import cors from "cors";
-import { exec } from "child_process";
-import fs from "fs";
+import { spawn } from "child_process";
 
 const app = express();
 app.use(cors());
 
-// API: GET /download?url=YOUTUBE_URL
-app.get("/download", async (req, res) => {
+// Utility: run yt-dlp and stream output directly to the client
+function streamYTDLP(url, args, res, contentType) {
+    res.setHeader("Content-Type", contentType);
+
+    const process = spawn("yt-dlp", [
+        "--cookies", "./cookies.txt",
+        "--extractor-args", "youtube:player_client=default",
+        ...args,
+        "-o", "-",               // send file to stdout
+        url
+    ]);
+
+    process.stdout.pipe(res);   // stream file to user
+
+    process.stderr.on("data", data => {
+        console.log("yt-dlp:", data.toString());
+    });
+
+    process.on("close", code => {
+        console.log("yt-dlp finished with code", code);
+        // res.end();  <-- not needed, piping handles it
+    });
+}
+
+// ------------------------------
+//   MP3: /mp3?url=YOUTUBE_URL
+// ------------------------------
+app.get("/mp3", (req, res) => {
     const url = req.query.url;
     if (!url) return res.status(400).json({ error: "Missing ?url=" });
 
-    console.log("Downloading:", url);
+    console.log("MP3 request:", url);
 
-    // yt-dlp command to generate BOTH mp3 + mp4
-    const cmd = `
-        yt-dlp --cookies ./cookies.txt \
-        --extract-audio --audio-format mp3 --audio-quality 0 \
-        --merge-output-format mp4 \
-        --output "%(title)s.%(ext)s" \
-        --print-json \
-        ${url}
-    `;
+    streamYTDLP(
+        url,
+        ["-f", "bestaudio", "--extract-audio", "--audio-format", "mp3"],
+        res,
+        "audio/mpeg"
+    );
+});
 
-    exec(cmd, { cwd: "/tmp" }, (err, stdout, stderr) => {
-        if (err) {
-            return res.status(500).json({
-                error: "yt-dlp failed",
-                details: stderr
-            });
-        }
+// ------------------------------
+//   MP4: /mp4?url=YOUTUBE_URL
+// ------------------------------
+app.get("/mp4", (req, res) => {
+    const url = req.query.url;
+    if (!url) return res.status(400).json({ error: "Missing ?url=" });
 
-        let info;
+    console.log("MP4 request:", url);
+
+    streamYTDLP(
+        url,
+        ["-f", "bestvideo+bestaudio", "--merge-output-format", "mp4"],
+        res,
+        "video/mp4"
+    );
+});
+
+// -------------------------------------------------------
+//  Combined API: /download?url=...  returns meta only
+//  (Use Zapier to choose mp3 or mp4 endpoints above)
+// -------------------------------------------------------
+app.get("/download", (req, res) => {
+    const url = req.query.url;
+    if (!url) return res.status(400).json({ error: "Missing ?url=" });
+
+    console.log("Metadata request:", url);
+
+    const process = spawn("yt-dlp", [
+        "--cookies", "./cookies.txt",
+        "--extractor-args", "youtube:player_client=default",
+        "--dump-json",
+        url
+    ]);
+
+    let output = "";
+
+    process.stdout.on("data", data => {
+        output += data.toString();
+    });
+
+    process.stderr.on("data", data => {
+        console.log("yt-dlp:", data.toString());
+    });
+
+    process.on("close", code => {
         try {
-            info = JSON.parse(stdout);
-        } catch (e) {
+            const info = JSON.parse(output);
+            return res.json({
+                success: true,
+                title: info.title,
+                thumbnail: info.thumbnail,
+                duration: info.duration,
+                formats: {
+                    mp3: `/mp3?url=${encodeURIComponent(url)}`,
+                    mp4: `/mp4?url=${encodeURIComponent(url)}`
+                }
+            });
+        } catch (err) {
             return res.status(500).json({
-                error: "Failed to parse yt-dlp output",
-                raw: stdout
+                error: "Failed parsing yt-dlp output",
+                raw: output
             });
         }
-
-        const title = info.title;
-        const mp4File = `/tmp/${title}.mp4`;
-        const mp3File = `/tmp/${title}.mp3`;
-
-        return res.json({
-            success: true,
-            title,
-            thumbnail: info.thumbnail,
-            duration: info.duration,
-            mp4_path: mp4File,
-            mp3_path: mp3File
-        });
     });
 });
 
+// -------------------------------------------------------
 app.listen(3000, () => {
     console.log("YT Converter API running on port 3000");
 });
