@@ -1,22 +1,31 @@
 import express from "express";
 import cors from "cors";
 import { spawn } from "child_process";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// Fix __dirname in ES modules:
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const COOKIE_PATH = path.join(__dirname, "cookies.txt");
 
 const app = express();
 app.use(cors());
 
-// --------------------------------------------------------
-// Helper: run yt-dlp and capture EVERYTHING for debugging
-// --------------------------------------------------------
-function runYTDLPForDebug(url, callback) {
+// Helper: run yt-dlp and capture ALL output
+function runYTDLP(url, callback) {
     const args = [
-        "--cookies", "./cookies.txt",
+        "--cookies", COOKIE_PATH,
         "--extractor-args", "youtube:player_client=default",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         "--dump-json",
-        "--no-warning",
+        "--no-warnings",
         "--no-check-certificate",
         url
     ];
+
+    console.log("RUNNING:", args);
 
     const process = spawn("yt-dlp", args);
 
@@ -36,31 +45,21 @@ function runYTDLPForDebug(url, callback) {
     });
 }
 
-// --------------------------------------------------------
-// /download — returns ALL yt-dlp debug output
-// --------------------------------------------------------
-app.get("/download", async (req, res) => {
+// Debug route
+app.get("/download", (req, res) => {
     const url = req.query.url;
     if (!url) return res.status(400).json({ error: "Missing ?url=" });
 
-    console.log("DEBUG /download request:", url);
-
-    runYTDLPForDebug(url, ({ code, stdout, stderr }) => {
-        // 🚨 RETURN EVERYTHING so we know EXACTLY what is failing
+    runYTDLP(url, ({ code, stdout, stderr }) => {
         return res.status(500).json({
             debug: true,
             exitCode: code,
-            raw_stdout: stdout || "(empty)",
-            raw_stderr: stderr || "(empty)"
+            stdout: stdout || "(empty)",
+            stderr: stderr || "(empty)"
         });
     });
 });
 
-// --------------------------------------------------------
-// NOTE: mp3/mp4 routes disabled temporarily until debugging
-// --------------------------------------------------------
-
-// --------------------------------------------------------
 app.listen(3000, () => {
-    console.log("YT Converter API (DEBUG MODE) running on port 3000");
+    console.log("YT Converter API DEBUG running on port 3000");
 });
